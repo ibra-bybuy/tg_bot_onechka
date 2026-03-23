@@ -24,7 +24,7 @@ import (
 const recentMessagesLimit = 1000
 
 var giveDirectionPrefixes = []string{"выда", "выдам", "выдать", "выдаю"}
-var receiveDirectionPrefixes = []string{"прим", "прием", "принима", "приемк"}
+var receiveDirectionPrefixes = []string{"прим", "прием", "принима", "приемк", "приня"}
 var queryStopWords = map[string]struct{}{
 	"запрос":  {},
 	"ищу":     {},
