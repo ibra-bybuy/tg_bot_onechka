@@ -187,9 +187,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, settings config.
 		var b strings.Builder
 		b.WriteString("Подходящие контакты:\n")
 		for _, match := range matches {
-			when := match.CreatedAt.Format("2006-01-02 15:04")
 			b.WriteString(fmt.Sprintf("- %s %s", formatUserLink(match.FromID, match.Username), html.EscapeString(trimForPreview(match.Text, 90))))
-			b.WriteString(fmt.Sprintf(" (%s)\n", when))
 		}
 
 		reply := tgbotapi.NewMessage(msg.Chat.ID, strings.TrimSpace(b.String()))
