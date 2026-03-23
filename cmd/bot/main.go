@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"database/sql"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
@@ -19,6 +20,64 @@ import (
 
 	"tg_bot_anechka/internal/config"
 )
+
+const recentMessagesLimit = 1000
+
+var giveDirectionPrefixes = []string{"выда", "выдам", "выдать", "выдаю"}
+var receiveDirectionPrefixes = []string{"прим", "прием", "принима", "приемк"}
+var queryStopWords = map[string]struct{}{
+	"запрос":  {},
+	"ищу":     {},
+	"найти":   {},
+	"контакт": {},
+	"контакты": {},
+	"от":      {},
+	"до":      {},
+	"на":      {},
+	"в":       {},
+	"по":      {},
+	"и":       {},
+	"или":     {},
+	"eur":     {},
+	"usd":     {},
+	"rub":     {},
+	"k":       {},
+	"к":       {},
+	"кк":      {},
+	"тыс":     {},
+	"тысяч":   {},
+	"млн":     {},
+	"млрд":    {},
+	"евро":    {},
+	"доллар":  {},
+	"доллара": {},
+	"долларов": {},
+	"руб":     {},
+	"рубль":   {},
+	"рубля":   {},
+	"рублей":  {},
+}
+
+type searchRequest struct {
+	Raw       string
+	Direction string
+	Locations []string
+}
+
+type storedMessage struct {
+	MessageID int
+	FromID    int64
+	Username  string
+	Text      string
+	CreatedAt time.Time
+}
+
+type userMatch struct {
+	FromID    int64
+	Username  string
+	Text      string
+	CreatedAt time.Time
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -80,11 +139,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, settings config.
 	if msg == nil {
 		msg = update.EditedMessage
 	}
-	if msg == nil {
-		return
-	}
-
-	if msg.Chat == nil {
+	if msg == nil || msg.Chat == nil {
 		return
 	}
 
@@ -103,44 +158,41 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, settings config.
 		username = msg.From.UserName
 	}
 
-	text := msg.Text
-	if text == "" {
-		text = msg.Caption
-	}
+	text := extractMessageText(msg)
 
-	query, mentioned := extractMentionQuery(msg, bot.Self.UserName)
-	if mentioned {
-		if query == "" {
-			reply := tgbotapi.NewMessage(msg.Chat.ID, "Напишите город, пример. @"+bot.Self.UserName+" Москва")
+	if request, ok := extractSearchRequest(msg, bot.Self.UserName); ok {
+		if len(request.Locations) == 0 {
+			reply := tgbotapi.NewMessage(msg.Chat.ID, "Напишите запрос с городом, например: #Запрос Майами или #Запрос Выдать Сочи")
 			reply.ReplyToMessageID = msg.MessageID
 			_, _ = bot.Send(reply)
 			return
 		}
 
-		results, err := searchMessages(db, msg.Chat.ID, query, 5)
+		matches, err := findMatchingUsers(db, msg.Chat.ID, request, recentMessagesLimit)
 		if err != nil {
-			reply := tgbotapi.NewMessage(msg.Chat.ID, "Не удалось найти. Пожалуйста, повторите попытку тоже позже.")
+			reply := tgbotapi.NewMessage(msg.Chat.ID, "Не удалось выполнить поиск. Попробуйте еще раз чуть позже.")
 			reply.ReplyToMessageID = msg.MessageID
 			_, _ = bot.Send(reply)
 			log.Printf("search error: %v", err)
 			return
 		}
 
-		if len(results) == 0 {
-			reply := tgbotapi.NewMessage(msg.Chat.ID, "Не удалось найти.")
+		if len(matches) == 0 {
+			reply := tgbotapi.NewMessage(msg.Chat.ID, "Ничего не найдено по этому запросу.")
 			reply.ReplyToMessageID = msg.MessageID
 			_, _ = bot.Send(reply)
 			return
 		}
 
 		var b strings.Builder
-		b.WriteString("Реузльтаты:\n")
-		for _, r := range results {
-			when := r.CreatedAt.Format("2006-01-02 15:04")
-			b.WriteString(fmt.Sprintf("- [%s] %s", when, formatUserLink(r.FromID, r.Username)))
+		b.WriteString("Подходящие контакты:\n")
+		for _, match := range matches {
+			when := match.CreatedAt.Format("2006-01-02 15:04")
+			b.WriteString(fmt.Sprintf("- %s %s", formatUserLink(match.FromID, match.Username), html.EscapeString(trimForPreview(match.Text, 90))))
+			b.WriteString(fmt.Sprintf(" (%s)\n", when))
 		}
 
-		reply := tgbotapi.NewMessage(msg.Chat.ID, b.String())
+		reply := tgbotapi.NewMessage(msg.Chat.ID, strings.TrimSpace(b.String()))
 		reply.ParseMode = "HTML"
 		reply.ReplyToMessageID = msg.MessageID
 		_, _ = bot.Send(reply)
@@ -156,14 +208,6 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, settings config.
 		displayUser = "@" + username
 	}
 	fmt.Printf("[%d] %s: %s\n", msg.Chat.ID, displayUser, text)
-}
-
-type searchResult struct {
-	MessageID int
-	FromID    int64
-	Username  string
-	Text      string
-	CreatedAt time.Time
 }
 
 func initMessageStore(db *sql.DB) error {
@@ -198,36 +242,236 @@ func storeMessage(db *sql.DB, msg *tgbotapi.Message, username, text string) erro
 	return err
 }
 
-func searchMessages(db *sql.DB, chatID int64, query string, limit int) ([]searchResult, error) {
-	like := "%" + query + "%"
+func findMatchingUsers(db *sql.DB, chatID int64, request searchRequest, limit int) ([]userMatch, error) {
+	messages, err := fetchRecentMessages(db, chatID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]userMatch, 0, 8)
+	seen := make(map[string]struct{})
+	for _, msg := range messages {
+		if !messageMatchesRequest(msg.Text, request) {
+			continue
+		}
+
+		key := userKey(msg.FromID, msg.Username)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		matches = append(matches, userMatch{
+			FromID:    msg.FromID,
+			Username:  msg.Username,
+			Text:      msg.Text,
+			CreatedAt: msg.CreatedAt,
+		})
+	}
+
+	return matches, nil
+}
+
+func fetchRecentMessages(db *sql.DB, chatID int64, limit int) ([]storedMessage, error) {
 	rows, err := db.Query(`
 		SELECT message_id, from_id, username, text, created_at
 		FROM messages
 		WHERE chat_id = ?
-			AND text LIKE ?
-			AND text NOT LIKE '/search%'
 		ORDER BY created_at DESC
 		LIMIT ?
-	`, chatID, like, limit)
+	`, chatID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	results := make([]searchResult, 0, limit)
+	results := make([]storedMessage, 0, limit)
 	for rows.Next() {
-		var r searchResult
+		var item storedMessage
 		var createdAt int64
-		if err := rows.Scan(&r.MessageID, &r.FromID, &r.Username, &r.Text, &createdAt); err != nil {
+		if err := rows.Scan(&item.MessageID, &item.FromID, &item.Username, &item.Text, &createdAt); err != nil {
 			return nil, err
 		}
-		r.CreatedAt = time.Unix(createdAt, 0)
-		results = append(results, r)
+		item.CreatedAt = time.Unix(createdAt, 0)
+		results = append(results, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return results, nil
+}
+
+func messageMatchesRequest(text string, request searchRequest) bool {
+	normalized := normalizeText(text)
+	if normalized == "" {
+		return false
+	}
+
+	if isSearchCommand(normalized) {
+		return false
+	}
+
+	if request.Direction != "" && !matchesDirection(normalized, request.Direction) {
+		return false
+	}
+
+	for _, location := range request.Locations {
+		if containsPhrase(normalized, location) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func extractSearchRequest(msg *tgbotapi.Message, botUsername string) (searchRequest, bool) {
+	if msg == nil {
+		return searchRequest{}, false
+	}
+
+	if query, ok := extractHashtagQuery(msg); ok {
+		return buildSearchRequest(query), true
+	}
+
+	query, mentioned := extractMentionQuery(msg, botUsername)
+	if !mentioned {
+		return searchRequest{}, false
+	}
+	return buildSearchRequest(query), true
+}
+
+func extractHashtagQuery(msg *tgbotapi.Message) (string, bool) {
+	raw := extractMessageText(msg)
+	if raw == "" {
+		return "", false
+	}
+
+	normalized := normalizeText(raw)
+	if normalized == "" {
+		return "", false
+	}
+
+	marker := "запрос"
+	idx := strings.Index(normalized, marker)
+	if idx == -1 {
+		return "", false
+	}
+
+	if !strings.Contains(strings.ToLower(raw), "#запрос") && !strings.HasPrefix(normalized, marker) {
+		return "", false
+	}
+
+	query := strings.TrimSpace(strings.TrimPrefix(normalized[idx:], marker))
+	return query, true
+}
+
+func buildSearchRequest(query string) searchRequest {
+	normalized := normalizeText(query)
+	return searchRequest{
+		Raw:       normalized,
+		Direction: detectDirection(normalized),
+		Locations: extractLocationPhrases(normalized),
+	}
+}
+
+func detectDirection(text string) string {
+	if hasAnyPrefix(text, giveDirectionPrefixes) {
+		return "give"
+	}
+	if hasAnyPrefix(text, receiveDirectionPrefixes) {
+		return "receive"
+	}
+	return ""
+}
+
+func matchesDirection(text, direction string) bool {
+	switch direction {
+	case "give":
+		return hasAnyPrefix(text, giveDirectionPrefixes)
+	case "receive":
+		return hasAnyPrefix(text, receiveDirectionPrefixes)
+	default:
+		return true
+	}
+}
+
+func hasAnyPrefix(text string, prefixes []string) bool {
+	for _, token := range strings.Fields(text) {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(token, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func extractLocationPhrases(text string) []string {
+	tokens := strings.Fields(text)
+	filtered := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if shouldSkipQueryToken(token) {
+			continue
+		}
+		filtered = append(filtered, token)
+	}
+
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	phrases := make([]string, 0, len(filtered))
+	joined := strings.Join(filtered, " ")
+	if joined != "" {
+		phrases = append(phrases, joined)
+	}
+	for _, token := range filtered {
+		if len([]rune(token)) >= 3 {
+			phrases = append(phrases, token)
+		}
+	}
+	return uniqueStrings(phrases)
+}
+
+func shouldSkipQueryToken(token string) bool {
+	if token == "" {
+		return true
+	}
+	if _, ok := queryStopWords[token]; ok {
+		return true
+	}
+	if hasAnyPrefix(token, giveDirectionPrefixes) || hasAnyPrefix(token, receiveDirectionPrefixes) {
+		return true
+	}
+	for _, r := range token {
+		if unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPhrase(text, phrase string) bool {
+	if phrase == "" {
+		return false
+	}
+	haystack := " " + text + " "
+	needle := " " + phrase + " "
+	return strings.Contains(haystack, needle)
+}
+
+func isSearchCommand(normalized string) bool {
+	return strings.HasPrefix(normalized, "запрос ") || normalized == "запрос"
+}
+
+func extractMessageText(msg *tgbotapi.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.Text != "" {
+		return msg.Text
+	}
+	return msg.Caption
 }
 
 func trimForPreview(text string, max int) string {
@@ -300,4 +544,49 @@ func extractMentionQuery(msg *tgbotapi.Message, botUsername string) (string, boo
 	}
 
 	return strings.TrimSpace(cleaned), true
+}
+
+func normalizeText(text string) string {
+	text = strings.ToLower(strings.ReplaceAll(text, "ё", "е"))
+	var b strings.Builder
+	b.Grow(len(text))
+	lastSpace := true
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func uniqueStrings(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		result = append(result, item)
+	}
+	return result
+}
+
+func userKey(fromID int64, username string) string {
+	if fromID != 0 {
+		return fmt.Sprintf("id:%d", fromID)
+	}
+	if username != "" {
+		return "username:" + strings.ToLower(strings.TrimPrefix(username, "@"))
+	}
+	return ""
 }
