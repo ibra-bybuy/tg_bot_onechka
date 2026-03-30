@@ -464,9 +464,67 @@ func containsPhrase(text, phrase string) bool {
 	if phrase == "" {
 		return false
 	}
-	haystack := " " + text + " "
-	needle := " " + phrase + " "
-	return strings.Contains(haystack, needle)
+
+	textTokens := strings.Fields(text)
+	phraseTokens := strings.Fields(phrase)
+	if len(textTokens) == 0 || len(phraseTokens) == 0 {
+		return false
+	}
+
+	for start := 0; start <= len(textTokens)-len(phraseTokens); start++ {
+		matched := true
+		for i := range phraseTokens {
+			if !tokensRoughlyMatch(textTokens[start+i], phraseTokens[i]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+
+	return false
+}
+
+func tokensRoughlyMatch(textToken, queryToken string) bool {
+	if textToken == queryToken {
+		return true
+	}
+
+	textBase := russianWordBase(textToken)
+	queryBase := russianWordBase(queryToken)
+	if textBase == "" || queryBase == "" {
+		return false
+	}
+
+	return textBase == queryBase
+}
+
+func russianWordBase(token string) string {
+	token = strings.TrimSpace(token)
+	if len([]rune(token)) <= 3 {
+		return token
+	}
+
+	endings := []string{
+		"иями", "ями", "ами", "ией", "ией", "иям", "ием", "иях",
+		"ого", "ему", "ому", "ыми", "ими", "его", "ому", "ее",
+		"ой", "ей", "ий", "ый", "ая", "яя", "ое", "ее",
+		"ам", "ям", "ах", "ях", "ом", "ем", "ою", "ею",
+		"у", "ю", "а", "я", "е", "ы", "и", "о",
+	}
+
+	for _, ending := range endings {
+		if strings.HasSuffix(token, ending) {
+			base := strings.TrimSuffix(token, ending)
+			if len([]rune(base)) >= 3 {
+				return base
+			}
+		}
+	}
+
+	return token
 }
 
 func isSearchCommand(normalized string) bool {
