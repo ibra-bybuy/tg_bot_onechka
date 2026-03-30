@@ -162,7 +162,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, settings config.
 
 	if request, ok := extractSearchRequest(msg, bot.Self.UserName); ok {
 		if len(request.Locations) == 0 {
-			reply := tgbotapi.NewMessage(msg.Chat.ID, "Напишите запрос с городом, например: #Запрос Майами или #Запрос Выдать Сочи")
+			reply := tgbotapi.NewMessage(msg.Chat.ID, "Напишите запрос с городом, например: #Запрос Майами, /Запрос Майами или /Майами")
 			reply.ReplyToMessageID = msg.MessageID
 			_, _ = bot.Send(reply)
 			return
@@ -328,7 +328,7 @@ func extractSearchRequest(msg *tgbotapi.Message, botUsername string) (searchRequ
 		return searchRequest{}, false
 	}
 
-	if query, ok := extractHashtagQuery(msg); ok {
+	if query, ok := extractCommandQuery(msg); ok {
 		return buildSearchRequest(query), true
 	}
 
@@ -339,12 +339,13 @@ func extractSearchRequest(msg *tgbotapi.Message, botUsername string) (searchRequ
 	return buildSearchRequest(query), true
 }
 
-func extractHashtagQuery(msg *tgbotapi.Message) (string, bool) {
+func extractCommandQuery(msg *tgbotapi.Message) (string, bool) {
 	raw := extractMessageText(msg)
 	if raw == "" {
 		return "", false
 	}
 
+	rawLower := strings.ToLower(strings.TrimSpace(raw))
 	normalized := normalizeText(raw)
 	if normalized == "" {
 		return "", false
@@ -352,16 +353,25 @@ func extractHashtagQuery(msg *tgbotapi.Message) (string, bool) {
 
 	marker := "запрос"
 	idx := strings.Index(normalized, marker)
+	hasHashtagRequest := strings.Contains(rawLower, "#запрос")
+	hasSlashRequest := strings.HasPrefix(rawLower, "/запрос")
+	hasSlashShortcut := strings.HasPrefix(rawLower, "/") && !hasSlashRequest
+	hasPlainRequest := strings.HasPrefix(normalized, marker)
+
+	if !hasHashtagRequest && !hasSlashRequest && !hasSlashShortcut && !hasPlainRequest {
+		return "", false
+	}
+
+	if hasSlashShortcut {
+		return strings.TrimSpace(normalizeText(strings.TrimSpace(strings.TrimPrefix(rawLower, "/")))), true
+	}
+
 	if idx == -1 {
 		return "", false
 	}
 
-	if !strings.Contains(strings.ToLower(raw), "#запрос") && !strings.HasPrefix(normalized, marker) {
-		return "", false
-	}
-
 	query := strings.TrimSpace(strings.TrimPrefix(normalized[idx:], marker))
-	return query, true
+	return query, query != ""
 }
 
 func buildSearchRequest(query string) searchRequest {
