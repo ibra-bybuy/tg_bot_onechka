@@ -102,6 +102,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create bot: %v", err)
 	}
+	if err := configureBotCommands(bot); err != nil {
+		log.Printf("failed to configure bot commands: %v", err)
+	}
 
 	db, err := sql.Open("sqlite", settings.MessageDBPath)
 	if err != nil {
@@ -134,6 +137,17 @@ func main() {
 	}
 }
 
+func configureBotCommands(bot *tgbotapi.BotAPI) error {
+	commands := []tgbotapi.BotCommand{
+		{Command: "запрос", Description: "Поиск по городу"},
+		{Command: "выдать", Description: "Найти тех, кто выдает"},
+		{Command: "принять", Description: "Найти тех, кто принимает"},
+	}
+
+	_, err := bot.Request(tgbotapi.NewSetMyCommands(commands...))
+	return err
+}
+
 func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, settings config.Settings, db *sql.DB) {
 	msg := update.Message
 	if msg == nil {
@@ -162,7 +176,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, settings config.
 
 	if request, ok := extractSearchRequest(msg, bot.Self.UserName); ok {
 		if len(request.Locations) == 0 {
-			reply := tgbotapi.NewMessage(msg.Chat.ID, "Напишите запрос с городом, например: #Запрос Майами, /Запрос Майами или /Майами")
+			reply := tgbotapi.NewMessage(msg.Chat.ID, "Напишите запрос с городом, например: #Запрос Майами, /Запрос Майами, /Выдать Санкт-Петербург или /Принять Париж")
 			reply.ReplyToMessageID = msg.MessageID
 			_, _ = bot.Send(reply)
 			return
@@ -355,13 +369,15 @@ func extractCommandQuery(msg *tgbotapi.Message) (string, bool) {
 	idx := strings.Index(normalized, marker)
 	hasHashtagRequest := strings.Contains(rawLower, "#запрос")
 	hasSlashRequest := strings.HasPrefix(rawLower, "/запрос")
-	hasSlashShortcut := strings.HasPrefix(rawLower, "/") && !hasSlashRequest
+	hasSlashGive := strings.HasPrefix(rawLower, "/выдать")
+	hasSlashReceive := strings.HasPrefix(rawLower, "/принять")
+	hasSlashShortcut := strings.HasPrefix(rawLower, "/") && !hasSlashRequest && !hasSlashGive && !hasSlashReceive
 
-	if !hasHashtagRequest && !hasSlashRequest && !hasSlashShortcut {
+	if !hasHashtagRequest && !hasSlashRequest && !hasSlashGive && !hasSlashReceive && !hasSlashShortcut {
 		return "", false
 	}
 
-	if hasSlashShortcut {
+	if hasSlashShortcut || hasSlashGive || hasSlashReceive {
 		return strings.TrimSpace(normalizeText(strings.TrimSpace(strings.TrimPrefix(rawLower, "/")))), true
 	}
 
