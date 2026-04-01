@@ -139,9 +139,8 @@ func main() {
 
 func configureBotCommands(bot *tgbotapi.BotAPI) error {
 	commands := []tgbotapi.BotCommand{
-		{Command: "запрос", Description: "Поиск по городу"},
-		{Command: "выдать", Description: "Найти тех, кто выдает"},
-		{Command: "принять", Description: "Найти тех, кто принимает"},
+		{Command: "p", Description: "Найти тех, кто принимает"},
+		{Command: "v", Description: "Найти тех, кто выдает"},
 	}
 
 	_, err := bot.Request(tgbotapi.NewSetMyCommands(commands...))
@@ -176,7 +175,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, settings config.
 
 	if request, ok := extractSearchRequest(msg, bot.Self.UserName); ok {
 		if len(request.Locations) == 0 {
-			reply := tgbotapi.NewMessage(msg.Chat.ID, "Напишите запрос с городом, например: #Запрос Майами, /Запрос Майами, /Выдать Санкт-Петербург или /Принять Париж")
+			reply := tgbotapi.NewMessage(msg.Chat.ID, "Напишите запрос с городом, например: /p Париж, /v Санкт-Петербург, #Запрос Майами или /Запрос Майами")
 			reply.ReplyToMessageID = msg.MessageID
 			_, _ = bot.Send(reply)
 			return
@@ -369,12 +368,22 @@ func extractCommandQuery(msg *tgbotapi.Message) (string, bool) {
 	idx := strings.Index(normalized, marker)
 	hasHashtagRequest := strings.Contains(rawLower, "#запрос")
 	hasSlashRequest := strings.HasPrefix(rawLower, "/запрос")
+	hasSlashP := strings.HasPrefix(rawLower, "/p")
+	hasSlashV := strings.HasPrefix(rawLower, "/v")
 	hasSlashGive := strings.HasPrefix(rawLower, "/выдать")
 	hasSlashReceive := strings.HasPrefix(rawLower, "/принять")
-	hasSlashShortcut := strings.HasPrefix(rawLower, "/") && !hasSlashRequest && !hasSlashGive && !hasSlashReceive
+	hasSlashShortcut := strings.HasPrefix(rawLower, "/") && !hasSlashRequest && !hasSlashP && !hasSlashV && !hasSlashGive && !hasSlashReceive
 
-	if !hasHashtagRequest && !hasSlashRequest && !hasSlashGive && !hasSlashReceive && !hasSlashShortcut {
+	if !hasHashtagRequest && !hasSlashRequest && !hasSlashP && !hasSlashV && !hasSlashGive && !hasSlashReceive && !hasSlashShortcut {
 		return "", false
+	}
+
+	if hasSlashP {
+		return strings.TrimSpace("принять " + normalizeText(strings.TrimSpace(strings.TrimPrefix(rawLower, "/p")))), true
+	}
+
+	if hasSlashV {
+		return strings.TrimSpace("выдать " + normalizeText(strings.TrimSpace(strings.TrimPrefix(rawLower, "/v")))), true
 	}
 
 	if hasSlashShortcut || hasSlashGive || hasSlashReceive {
