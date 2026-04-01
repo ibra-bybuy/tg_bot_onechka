@@ -356,9 +356,8 @@ func extractCommandQuery(msg *tgbotapi.Message) (string, bool) {
 	hasHashtagRequest := strings.Contains(rawLower, "#запрос")
 	hasSlashRequest := strings.HasPrefix(rawLower, "/запрос")
 	hasSlashShortcut := strings.HasPrefix(rawLower, "/") && !hasSlashRequest
-	hasPlainRequest := strings.HasPrefix(normalized, marker)
 
-	if !hasHashtagRequest && !hasSlashRequest && !hasSlashShortcut && !hasPlainRequest {
+	if !hasHashtagRequest && !hasSlashRequest && !hasSlashShortcut {
 		return "", false
 	}
 
