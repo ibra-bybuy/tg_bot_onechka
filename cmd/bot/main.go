@@ -341,7 +341,7 @@ func extractSearchRequest(msg *tgbotapi.Message, botUsername string) (searchRequ
 		return searchRequest{}, false
 	}
 
-	if query, ok := extractCommandQuery(msg); ok {
+	if query, ok := extractCommandQuery(msg, botUsername); ok {
 		return buildSearchRequest(query), true
 	}
 
@@ -352,7 +352,7 @@ func extractSearchRequest(msg *tgbotapi.Message, botUsername string) (searchRequ
 	return buildSearchRequest(query), true
 }
 
-func extractCommandQuery(msg *tgbotapi.Message) (string, bool) {
+func extractCommandQuery(msg *tgbotapi.Message, botUsername string) (string, bool) {
 	raw := extractMessageText(msg)
 	if raw == "" {
 		return "", false
@@ -366,28 +366,37 @@ func extractCommandQuery(msg *tgbotapi.Message) (string, bool) {
 
 	marker := "запрос"
 	idx := strings.Index(normalized, marker)
+	trimmedCommand := trimBotCommandSuffix(rawLower, botUsername)
 	hasHashtagRequest := strings.Contains(rawLower, "#запрос")
-	hasSlashRequest := strings.HasPrefix(rawLower, "/запрос")
-	hasSlashP := strings.HasPrefix(rawLower, "/p")
-	hasSlashV := strings.HasPrefix(rawLower, "/v")
-	hasSlashGive := strings.HasPrefix(rawLower, "/выдать")
-	hasSlashReceive := strings.HasPrefix(rawLower, "/принять")
-	hasSlashShortcut := strings.HasPrefix(rawLower, "/") && !hasSlashRequest && !hasSlashP && !hasSlashV && !hasSlashGive && !hasSlashReceive
+	hasSlashRequest := strings.HasPrefix(trimmedCommand, "/запрос")
+	hasSlashP := matchesSlashCommand(trimmedCommand, "/p")
+	hasSlashV := matchesSlashCommand(trimmedCommand, "/v")
+	hasSlashGive := strings.HasPrefix(trimmedCommand, "/выдать")
+	hasSlashReceive := strings.HasPrefix(trimmedCommand, "/принять")
+	hasSlashShortcut := strings.HasPrefix(trimmedCommand, "/") && !hasSlashRequest && !hasSlashP && !hasSlashV && !hasSlashGive && !hasSlashReceive
 
 	if !hasHashtagRequest && !hasSlashRequest && !hasSlashP && !hasSlashV && !hasSlashGive && !hasSlashReceive && !hasSlashShortcut {
 		return "", false
 	}
 
 	if hasSlashP {
-		return strings.TrimSpace("принять " + normalizeText(strings.TrimSpace(strings.TrimPrefix(rawLower, "/p")))), true
+		query := normalizeText(strings.TrimSpace(strings.TrimPrefix(trimmedCommand, "/p")))
+		if query == "" {
+			return "", false
+		}
+		return strings.TrimSpace("принять " + query), true
 	}
 
 	if hasSlashV {
-		return strings.TrimSpace("выдать " + normalizeText(strings.TrimSpace(strings.TrimPrefix(rawLower, "/v")))), true
+		query := normalizeText(strings.TrimSpace(strings.TrimPrefix(trimmedCommand, "/v")))
+		if query == "" {
+			return "", false
+		}
+		return strings.TrimSpace("выдать " + query), true
 	}
 
 	if hasSlashShortcut || hasSlashGive || hasSlashReceive {
-		return strings.TrimSpace(normalizeText(strings.TrimSpace(strings.TrimPrefix(rawLower, "/")))), true
+		return strings.TrimSpace(normalizeText(strings.TrimSpace(strings.TrimPrefix(trimmedCommand, "/")))), true
 	}
 
 	if idx == -1 {
@@ -396,6 +405,30 @@ func extractCommandQuery(msg *tgbotapi.Message) (string, bool) {
 
 	query := strings.TrimSpace(strings.TrimPrefix(normalized[idx:], marker))
 	return query, query != ""
+}
+
+func trimBotCommandSuffix(raw, botUsername string) string {
+	if raw == "" || botUsername == "" || !strings.HasPrefix(raw, "/") {
+		return raw
+	}
+
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return raw
+	}
+
+	commandPart := fields[0]
+	suffix := "@" + strings.ToLower(botUsername)
+	if !strings.Contains(commandPart, suffix) {
+		return raw
+	}
+
+	fields[0] = strings.Replace(commandPart, suffix, "", 1)
+	return strings.Join(fields, " ")
+}
+
+func matchesSlashCommand(raw, command string) bool {
+	return raw == command || strings.HasPrefix(raw, command+" ")
 }
 
 func buildSearchRequest(query string) searchRequest {
